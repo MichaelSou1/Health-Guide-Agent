@@ -1,0 +1,74 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Machine learning models and caches
+hf_cache/
+*.bin
+*.pt
+*.pth
+model_cache/
+models/
+checkpoints/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+profile_store.json
+observability.db
+checkpoints.db
+
+# Project specific sensitive data
+reports/
+knowledge/
+.claude/
+
+# OS specific
+Thumbs.db
+.AppleDouble
+.LSOverride
