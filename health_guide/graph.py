@@ -9,8 +9,6 @@ from .agents.nutritionist import nutritionist_node
 from .agents.wellness import wellness_node
 from .agents.general import general_node
 
-import sqlite3
-
 # 使用本地文件作为 Checkpoint
 # 注意：在生产环境中，通常会在 application context 中管理连接
 conn = sqlite3.connect("checkpoints.db", check_same_thread=False)

@@ -1,5 +1,11 @@
 python-dotenv
 langchain-core
 langchain-openai
+langchain
 langgraph
 langgraph-checkpoint-sqlite
+numpy
+torch
+sentence-transformers
+requests
+beautifulsoup4

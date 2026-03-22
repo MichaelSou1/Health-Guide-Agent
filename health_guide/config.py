@@ -1,14 +1,12 @@
 import os
-import json
 from dotenv import load_dotenv
 
 _ = load_dotenv()
 
 # 请确保 .env 文件中有 METASO_API_KEY 和 SILICONFLOW_API_KEY
 
-# 长期记忆：用户画像 (User Profile)
-# 请在此处修改为您自己的信息
-USER_PROFILE = {
+# 长期记忆默认模板：用户画像 (User Profile)
+DEFAULT_USER_PROFILE = {
   "name": "User", # [示例] "Michael"
   "identity": "用户", # [示例] "CS研究生"
   "physical_stats": {
@@ -27,3 +25,30 @@ USER_PROFILE = {
     "relaxation_preference": "" # [示例] "打游戏" 或 "看电影"
   }
 }
+
+# 持久化画像存储文件
+PROFILE_STORE_PATH = os.environ.get("PROFILE_STORE_PATH", "profile_store.json")
+
+# 本地知识库目录
+KNOWLEDGE_BASE_DIR = os.environ.get("KNOWLEDGE_BASE_DIR", "knowledge_base")
+KNOWLEDGE_BASE_SHARED_SUBDIR = os.environ.get("KNOWLEDGE_BASE_SHARED_SUBDIR", "shared")
+KNOWLEDGE_BASE_AGENT_SUBDIRS = {
+  "trainer": os.environ.get("KNOWLEDGE_BASE_TRAINER_SUBDIR", "trainer"),
+  "nutritionist": os.environ.get("KNOWLEDGE_BASE_NUTRITIONIST_SUBDIR", "nutritionist"),
+  "wellness": os.environ.get("KNOWLEDGE_BASE_WELLNESS_SUBDIR", "wellness"),
+  "general": os.environ.get("KNOWLEDGE_BASE_GENERAL_SUBDIR", "general"),
+}
+
+# RAG: Retrieve & Re-rank 配置（默认针对 8GB 显存端侧优化）
+RAG_EMBED_MODEL_NAME = os.environ.get("RAG_EMBED_MODEL_NAME", "BAAI/bge-small-zh-v1.5")
+RAG_RERANK_MODEL_NAME = os.environ.get("RAG_RERANK_MODEL_NAME", "BAAI/bge-reranker-base")
+RAG_DEVICE = os.environ.get("RAG_DEVICE", "auto")
+
+# 第一阶段召回数量（向量检索 Top-K）
+RAG_RETRIEVE_TOP_K = int(os.environ.get("RAG_RETRIEVE_TOP_K", "12"))
+# 第二阶段重排后返回数量
+RAG_FINAL_TOP_K = int(os.environ.get("RAG_FINAL_TOP_K", "4"))
+
+# 编码和重排批大小（端侧可调，4060 8GB 默认较稳）
+RAG_EMBED_BATCH_SIZE = int(os.environ.get("RAG_EMBED_BATCH_SIZE", "32"))
+RAG_RERANK_BATCH_SIZE = int(os.environ.get("RAG_RERANK_BATCH_SIZE", "16"))

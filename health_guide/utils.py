@@ -1,14 +1,9 @@
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langgraph.prebuilt import create_react_agent
 
 # --- 辅助函数：创建一个专家 Agent 节点 ---
 def create_agent(llm, tools, system_prompt):
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        MessagesPlaceholder(variable_name="messages"),
-    ])
-    if tools:
-        llm_with_tools = llm.bind_tools(tools)
-    else:
-        llm_with_tools = llm
-    agent = prompt | llm_with_tools
-    return agent
+    return create_react_agent(
+        model=llm,
+        tools=tools,
+        prompt=system_prompt,
+    )
