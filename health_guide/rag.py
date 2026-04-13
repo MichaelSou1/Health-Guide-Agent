@@ -20,11 +20,20 @@ from .config import (
 )
 
 
+# 目前支持的知识语料文件类型。
+# - .md / .txt: 直接按 UTF-8 读取
+# - .pdf: 通过 pypdf 按页提取文本,用 \f (form-feed) 作为分页分隔符,
+#         便于后续 chunk 归页
+SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf"}
+PAGE_SEPARATOR = "\f"
+
+
 @dataclass
 class Chunk:
     chunk_id: str
     source: str
     text: str
+    page_range: Optional[str] = None  # 仅 PDF 有值, 例如 "3" 或 "3-4"
 
 
 class LocalKnowledgeBase:
@@ -62,13 +71,70 @@ class LocalKnowledgeBase:
         docs = []
         iter_files = self.kb_dir.rglob("*") if self.recursive else self.kb_dir.glob("*")
         for path in sorted(iter_files):
-            if path.is_file() and path.suffix.lower() in {".md", ".txt"}:
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            if suffix not in SUPPORTED_SUFFIXES:
+                continue
+
+            source = str(path.relative_to(self.kb_dir)).replace("\\", "/")
+
+            if suffix == ".pdf":
+                content = self._read_pdf(path)
+                file_type = "pdf"
+            else:
                 try:
                     content = path.read_text(encoding="utf-8")
                 except UnicodeDecodeError:
                     content = path.read_text(encoding="utf-8", errors="ignore")
-                docs.append({"source": str(path.relative_to(self.kb_dir)).replace("\\", "/"), "text": content})
+                file_type = "text"
+
+            if not content or not content.strip():
+                # 扫描版 PDF / 空文件等情况:跳过,避免污染索引
+                continue
+
+            docs.append({"source": source, "text": content, "file_type": file_type})
         return docs
+
+    @staticmethod
+    def _read_pdf(path: Path) -> str:
+        """按页提取 PDF 文本,用 form-feed (\\f) 作为页分隔符。
+
+        设计说明:
+        - 用 pypdf 进行纯 Python 解析,无需系统依赖,部署方便。
+        - 使用 \\f 作为分页符,后续 chunker 可以通过计算 \\f 出现次数推算 chunk 所在页范围,
+          而又不会因为分页符干扰 embedding 文本语义(\\f 不携带语义,BGE 类 tokenizer 会直接忽略)。
+        - 对单页文本做轻量清洗:合并重复换行、去除行尾空白,减少 PDF 提取时的噪声。
+        - 扫描版 PDF 会得到空字符串 —— 由调用方负责跳过;OCR 不在本项目范围内。
+        """
+        try:
+            pypdf = importlib.import_module("pypdf")
+        except ImportError as e:
+            raise ImportError(
+                "解析 PDF 需要 pypdf,请先执行: pip install pypdf"
+            ) from e
+
+        try:
+            reader = pypdf.PdfReader(str(path))
+        except Exception as e:
+            print(f"[RAG][warn] 无法解析 PDF: {path} ({e.__class__.__name__}: {e})")
+            return ""
+
+        pages_text: List[str] = []
+        for page in reader.pages:
+            try:
+                raw = page.extract_text() or ""
+            except Exception:
+                raw = ""
+            # 轻量清洗:压缩重复空行,去掉行尾空白
+            cleaned = re.sub(r"[ \t]+\n", "\n", raw)
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+            # 页尾补一个换行,防止后续 chunk 跨页时两页文字被直接拼接成无意义长词
+            if cleaned:
+                cleaned += "\n"
+            pages_text.append(cleaned)
+
+        return PAGE_SEPARATOR.join(pages_text)
 
     def _docs_fingerprint(self, docs: List[Dict[str, str]]) -> str:
         payload = {
@@ -172,22 +238,57 @@ class LocalKnowledgeBase:
         )
         np.save(str(self._cache_embeddings_path()), self._chunk_embeddings)
 
-    def _split_text(self, text: str) -> List[str]:
-        clean = re.sub(r"\n{3,}", "\n\n", text).strip()
-        if not clean:
+    def _split_text(self, text: str):
+        """切分文本为 chunks。返回 [(piece, page_range_or_None), ...]。
+
+        如果 text 中包含 PAGE_SEPARATOR(来自 PDF 提取),会建立「char offset → 页码」映射,
+        然后在切分后反推每个 chunk 所跨的页码区间,用于 citation。
+        普通 md/txt 文件则始终返回 page_range=None。
+        """
+        has_pages = PAGE_SEPARATOR in text
+        page_numbers: Optional[List[int]] = None
+
+        if has_pages:
+            cleaned_chars: List[str] = []
+            page_numbers = []
+            current_page = 1
+            for ch in text:
+                if ch == PAGE_SEPARATOR:
+                    current_page += 1
+                    continue
+                cleaned_chars.append(ch)
+                page_numbers.append(current_page)
+            cleaned = "".join(cleaned_chars)
+        else:
+            cleaned = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+        if not cleaned.strip():
             return []
 
-        chunks = []
+        results: List = []
         start = 0
-        n = len(clean)
+        n = len(cleaned)
         while start < n:
             end = min(start + self.chunk_size, n)
-            piece = clean[start:end]
-            chunks.append(piece)
+            piece = cleaned[start:end].strip()
+
+            if piece:
+                if page_numbers is not None:
+                    start_page = page_numbers[start]
+                    end_page = page_numbers[end - 1]
+                    page_range = (
+                        str(start_page)
+                        if start_page == end_page
+                        else f"{start_page}-{end_page}"
+                    )
+                else:
+                    page_range = None
+                results.append((piece, page_range))
+
             if end == n:
                 break
-            start = max(0, end - self.overlap)
-        return chunks
+            start = max(start + 1, end - self.overlap)
+        return results
 
     def clear_cache(self):
         if self.cache_dir.exists():
@@ -212,12 +313,17 @@ class LocalKnowledgeBase:
         chunks: List[Chunk] = []
         for d in docs:
             pieces = self._split_text(d["text"])
-            for i, p in enumerate(pieces):
+            for i, (piece_text, page_range) in enumerate(pieces):
+                if page_range:
+                    chunk_id = f"{d['source']}#p{page_range}-chunk-{i+1}"
+                else:
+                    chunk_id = f"{d['source']}#chunk-{i+1}"
                 chunks.append(
                     Chunk(
-                        chunk_id=f"{d['source']}#chunk-{i+1}",
+                        chunk_id=chunk_id,
                         source=d["source"],
-                        text=p,
+                        text=piece_text,
+                        page_range=page_range,
                     )
                 )
 
@@ -308,6 +414,7 @@ class LocalKnowledgeBase:
                     "rank": rank,
                     "chunk_id": c.chunk_id,
                     "source": c.source,
+                    "page_range": c.page_range,
                     "dense_score": round(float(sim_scores[i]), 4),
                 }
             )
@@ -333,6 +440,7 @@ class LocalKnowledgeBase:
                     "rank": rank,
                     "chunk_id": c.chunk_id,
                     "source": c.source,
+                    "page_range": c.page_range,
                     "dense_score": round(dense, 4),
                     "rerank_score": round(rr, 4),
                 }
@@ -395,6 +503,7 @@ class LocalKnowledgeBase:
                 {
                     "chunk_id": c.chunk_id,
                     "source": c.source,
+                    "page_range": c.page_range,
                     "score": round(final_score, 4),
                     "dense_score": round(dense_score, 4),
                     "rerank_score": round(rerank_score, 4),
