@@ -196,31 +196,90 @@ python scripts/build_rag_index.py --agent trainer --rebuild
 python scripts/build_rag_index.py --chunk-size 420 --overlap 80 --stats-out reports/rag_index_stats.json
 ```
 
-## RAG 评测（Recall@k / MRR / 命中率）
+## RAG 召回准确率评测（Embedding / Rerank 分层评测）
+
+本项目将 RAG 的两个核心阶段 **拆开独立评测**，以便分别判断「embedding 捞得全不全」和
+「rerank 排得准不准」：
+
+| 阶段 | 评测对象 | 关注点 | 默认 k |
+| --- | --- | --- | --- |
+| **Embedding Stage**（Stage-1 Dense Retrieve） | `BAAI/bge-small-zh-v1.5` 的稠密召回 | 候选池覆盖能力：相关 chunk 有没有被捞进来 | `5,10,20` |
+| **Rerank Stage**（Stage-2 Cross-Encoder Re-rank） | `BAAI/bge-reranker-base` 的头部精排 | 头部精度：最相关的 chunk 是不是被排到了最前面 | `1,3,5` |
 
 评测集默认文件：`eval/rag_eval_dataset.jsonl`
 
+一键运行：
+
 ```bash
-python scripts/evaluate_rag.py --dataset eval/rag_eval_dataset.jsonl --ks 1,3,5
+python scripts/evaluate_rag.py \
+  --dataset eval/rag_eval_dataset.jsonl \
+  --stage1-ks 5,10,20 \
+  --stage2-ks 1,3,5 \
+  --stage1-pool 20
 ```
 
-输出：
+- `--stage1-pool`：Stage-1 候选池大小，同时也是 Stage-2 重排器输入的候选数
+- `--stage1-ks` / `--stage2-ks`：两阶段各自使用的 k 值列表
 
-- `reports/rag_eval_report.json`
-- 包含 `summary`（总体）和 `per_agent_summary`（按 Agent）
+输出：`reports/rag_eval_report.json`，结构如下：
 
-默认统计指标：
+```text
+config                        # 采样数 / k 设置 / 候选池大小
+embedding_stage               # Stage-1（仅 embedding）聚合指标
+rerank_stage                  # Stage-2（rerank 后）聚合指标
+rerank_uplift_vs_embedding    # rerank 相对 embedding 的 Δ（正值=有提升）
+per_agent_summary             # 按 agent 拆分的分层指标
+details                       # 每条 query 的两阶段 top-N 细节（可追溯）
+```
 
-- `Recall@k`
-- `MRR`
-- `Hit Rate@k`
+### 指标选择与理由
 
-评测样本格式（JSONL，每行一个样本）：
+两个阶段承担的职责不同，因此关注的指标也不同：
+
+1. **Recall@k**（主看 embedding 阶段，k 较大）
+   - Embedding 的职责是「把相关片段放进候选池」。只要 Recall@20 足够高，
+     下游 rerank 就有翻盘机会；反之 Recall 塌掉，后面再怎么排也救不回来。
+   - 这是最能直接反映 embedding 模型质量的指标。
+
+2. **MRR（Mean Reciprocal Rank）**（两阶段都看）
+   - 衡量「第一个相关结果的位置倒数」，是单一数字能描述排序好坏的经典 IR 指标。
+   - 对 rerank 特别敏感：rerank 的核心价值就是把 Top-1 从错的换成对的。
+
+3. **nDCG@k**（主看 rerank 阶段，k=3/5）
+   - 位置感知的排序质量指标：越靠前的相关结果权重越大。
+   - LLM 的上下文窗口有限，Top-3/Top-5 的排序质量直接决定 prompt 信息密度，
+     nDCG 比 Hit Rate 更能反映这个层面的差异。
+
+4. **MAP@k（Mean Average Precision）**（两阶段都看）
+   - 在一条 query 有多个相关文档时（本项目常见），MAP 能同时考虑命中数量和命中位置，
+     比 Recall 更细粒度、比 MRR 更能覆盖「全部相关文档」的情形。
+
+5. **Hit Rate@k**（粗粒度健康检查）
+   - 「Top-k 中是否至少命中一条相关结果」，作为最直观的冒烟指标保留。
+
+6. **Rerank Uplift = Stage-2 - Stage-1**（隔离 rerank 的边际贡献）
+   - 在两阶段共享的 k 上报告 `Δ MRR / Δ Recall@k / Δ nDCG@k / Δ MAP@k`。
+   - 健康的 RAG 系统应当出现：Δ Recall@k ≈ 0（rerank 本就不扩大候选池），
+     Δ MRR > 0、Δ nDCG@k > 0（rerank 把好结果挤到了前面）。
+   - 如果 Δ < 0，说明重排器在这个数据集/语料上反而在伤害结果，需要调参或换模型。
+
+### 评测样本格式（JSONL，每行一个样本）
 
 ```json
 {"query":"减脂期每天建议热量赤字多少？","agent":"nutritionist","relevant_sources":["nutrition_guidelines.md"]}
 {"query":"膝痛用户训练时应注意什么？","agent":"trainer","relevant_sources":["exercise_safety.md","training_recovery.md"]}
 ```
+
+- `agent`：路由到的 agent 命名空间（`trainer` / `nutritionist` / `wellness` / `general`）
+- `relevant_sources`：source 级 ground truth（文件名，自动匹配带命名空间前缀的 source）
+- `relevant_chunk_ids`：可选，chunk 级 ground truth（更细粒度）
+
+### 扩展建议
+
+- 线下迭代 embedding / rerank 模型时，跑一次脚本就能看到每个组件自己的指标曲线，
+  避免「端到端只有一个总分、不知道是谁在拖后腿」。
+- 建议按 agent 持续补充 10-30 条高质量 query；从面试角度讲，
+  能同时展示 **数据集 → 指标 → 分层归因 → 迭代闭环** 的完整评测工程能力。
 
 ## RAG 文档维护
 

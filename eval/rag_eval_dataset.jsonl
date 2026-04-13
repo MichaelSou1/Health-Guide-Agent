@@ -1,5 +1,15 @@
 {"query":"减脂期每天建议热量赤字多少？","agent":"nutritionist","relevant_sources":["nutrition_guidelines.md"]}
 {"query":"力量训练人群蛋白质摄入范围是多少？","agent":"nutritionist","relevant_sources":["nutrition_guidelines.md"]}
+{"query":"增肌期建议每天多少热量盈余？","agent":"nutritionist","relevant_sources":["diet_planning.md","nutrition_guidelines.md"]}
+{"query":"蛋白质一天分几餐吃更有利于执行？","agent":"nutritionist","relevant_sources":["nutrition_guidelines.md","diet_planning.md"]}
+{"query":"饮食执行上如何提升长期可持续性？","agent":"nutritionist","relevant_sources":["nutrition_guidelines.md","diet_planning.md"]}
 {"query":"膝痛用户训练时应注意什么？","agent":"trainer","relevant_sources":["exercise_safety.md","training_recovery.md"]}
+{"query":"工作组的 RPE 建议目标是多少？","agent":"trainer","relevant_sources":["exercise_safety.md"]}
+{"query":"每周应该安排几天恢复性训练？","agent":"trainer","relevant_sources":["exercise_safety.md","training_recovery.md"]}
 {"query":"高压时期如何平衡训练与恢复？","agent":"wellness","relevant_sources":["recovery_protocol.md","stress_sleep.md"]}
 {"query":"成年人每晚建议睡眠时长是多少？","agent":"wellness","relevant_sources":["stress_sleep.md"]}
+{"query":"疼痛管理应该分几个阶段渐进？","agent":"wellness","relevant_sources":["recovery_protocol.md"]}
+{"query":"持续失眠或情绪低落应该怎么办？","agent":"wellness","relevant_sources":["recovery_protocol.md"]}
+{"query":"短期压力大可以用哪些方法缓解？","agent":"wellness","relevant_sources":["stress_sleep.md"]}
+{"query":"你好，在吗","agent":"general","relevant_sources":["faq.md"]}
+{"query":"用户说谢谢时应该怎么回复？","agent":"general","relevant_sources":["faq.md"]}

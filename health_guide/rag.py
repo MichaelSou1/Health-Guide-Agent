@@ -255,6 +255,91 @@ class LocalKnowledgeBase:
             "cache_exists": int(self.cache_dir.exists()),
         }
 
+    def retrieve_stages(
+        self,
+        query: str,
+        stage1_k: int = RAG_RETRIEVE_TOP_K,
+        stage2_k: int = RAG_FINAL_TOP_K,
+    ) -> Dict[str, List[Dict[str, object]]]:
+        """返回两阶段检索的原始结果，用于对 Embedding 召回与 Rerank 质量分别做评测。
+
+        - stage1: 仅使用 embedding 的稠密检索 Top-K（按余弦相似度排序）
+        - stage2: 对 stage1 的候选做 cross-encoder 重排后的 Top-K（按 rerank 分排序）
+
+        与 `retrieve()` 不同，这里不做任何分数融合或 boost，保持原始分数以便公平对比两个阶段。
+        """
+        empty: Dict[str, List[Dict[str, object]]] = {"stage1": [], "stage2": []}
+        if not self._ready:
+            self.build()
+
+        if not self.chunks or self._chunk_embeddings is None:
+            return empty
+
+        query = (query or "").strip()
+        if not query:
+            return empty
+
+        self._lazy_load_models()
+        np = self._lazy_import_numpy()
+
+        stage1_k = max(1, min(stage1_k, len(self.chunks)))
+        stage2_k = max(1, min(stage2_k, stage1_k))
+
+        # Stage-1: Dense Retrieve
+        query_emb = self._embed_model.encode(
+            [query],
+            batch_size=1,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )[0]
+
+        sim_scores = self._chunk_embeddings @ query_emb
+        candidate_idx = np.argpartition(-sim_scores, stage1_k - 1)[:stage1_k]
+        candidate_idx = sorted(
+            candidate_idx.tolist(), key=lambda i: float(sim_scores[i]), reverse=True
+        )
+
+        stage1_results: List[Dict[str, object]] = []
+        for rank, i in enumerate(candidate_idx, start=1):
+            c = self.chunks[i]
+            stage1_results.append(
+                {
+                    "rank": rank,
+                    "chunk_id": c.chunk_id,
+                    "source": c.source,
+                    "dense_score": round(float(sim_scores[i]), 4),
+                }
+            )
+
+        # Stage-2: Re-rank
+        pairs = [[query, self.chunks[i].text] for i in candidate_idx]
+        rerank_scores = self._rerank_model.predict(
+            pairs,
+            batch_size=RAG_RERANK_BATCH_SIZE,
+            show_progress_bar=False,
+        )
+
+        combined = []
+        for i, rr in zip(candidate_idx, rerank_scores):
+            combined.append((i, float(sim_scores[i]), float(rr)))
+        combined.sort(key=lambda x: x[2], reverse=True)
+
+        stage2_results: List[Dict[str, object]] = []
+        for rank, (i, dense, rr) in enumerate(combined[:stage2_k], start=1):
+            c = self.chunks[i]
+            stage2_results.append(
+                {
+                    "rank": rank,
+                    "chunk_id": c.chunk_id,
+                    "source": c.source,
+                    "dense_score": round(dense, 4),
+                    "rerank_score": round(rr, 4),
+                }
+            )
+
+        return {"stage1": stage1_results, "stage2": stage2_results}
+
     def retrieve(self, query: str, top_k: int = RAG_FINAL_TOP_K) -> List[Dict[str, str]]:
         if not self._ready:
             self.build()
@@ -423,6 +508,70 @@ class LayeredKnowledgeRouter:
         merged.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
 
         return merged[: max(1, top_k)]
+
+    def retrieve_stages(
+        self,
+        query: str,
+        agent: str = "general",
+        stage1_k: int = RAG_RETRIEVE_TOP_K,
+        stage2_k: int = RAG_FINAL_TOP_K,
+    ) -> Dict[str, List[Dict[str, object]]]:
+        """分层路由版的两阶段检索结果（用于评测）。
+
+        合并 agent 私有库 + 共享库的候选，stage1 按 dense_score 排序、stage2 按 rerank_score 排序。
+        为了便于评测指标与生产行为对齐，chunk_id 和 source 会带上 namespace 前缀。
+        不做额外的 score boost——评测时只关心召回/排序本身，而不是融合策略。
+        """
+        if not self._ready:
+            self.build(force_rebuild=False, agent=agent)
+
+        per_store_stage1_k = max(stage1_k, RAG_RETRIEVE_TOP_K // 2)
+        per_store_stage2_k = max(stage2_k, RAG_FINAL_TOP_K)
+
+        parts_stage1: List[Dict[str, object]] = []
+        parts_stage2: List[Dict[str, object]] = []
+
+        private_store = self._agent_stores.get(agent)
+        if private_store is not None:
+            p = private_store.retrieve_stages(
+                query=query, stage1_k=per_store_stage1_k, stage2_k=per_store_stage2_k
+            )
+            parts_stage1.extend(self._tag_namespace(p["stage1"], namespace=agent))
+            parts_stage2.extend(self._tag_namespace(p["stage2"], namespace=agent))
+
+        s = self._shared_store.retrieve_stages(
+            query=query, stage1_k=per_store_stage1_k, stage2_k=per_store_stage2_k
+        )
+        parts_stage1.extend(self._tag_namespace(s["stage1"], namespace="shared"))
+        parts_stage2.extend(self._tag_namespace(s["stage2"], namespace="shared"))
+
+        parts_stage1 = self._dedupe(parts_stage1)
+        parts_stage2 = self._dedupe(parts_stage2)
+
+        parts_stage1.sort(key=lambda x: float(x.get("dense_score", 0.0)), reverse=True)
+        parts_stage2.sort(key=lambda x: float(x.get("rerank_score", 0.0)), reverse=True)
+
+        # 重新编号
+        for rank, r in enumerate(parts_stage1[:stage1_k], start=1):
+            r["rank"] = rank
+        for rank, r in enumerate(parts_stage2[:stage2_k], start=1):
+            r["rank"] = rank
+
+        return {
+            "stage1": parts_stage1[:stage1_k],
+            "stage2": parts_stage2[:stage2_k],
+        }
+
+    @staticmethod
+    def _tag_namespace(items: List[Dict[str, object]], namespace: str) -> List[Dict[str, object]]:
+        tagged = []
+        for item in items:
+            x = dict(item)
+            x["namespace"] = namespace
+            x["chunk_id"] = f"{namespace}:{x.get('chunk_id', '')}"
+            x["source"] = f"{namespace}/{x.get('source', '')}"
+            tagged.append(x)
+        return tagged
 
     def get_index_stats(self) -> Dict[str, Dict[str, int]]:
         stats = {"shared": self._shared_store.get_index_stats()}
