@@ -40,7 +40,11 @@ KNOWLEDGE_BASE_AGENT_SUBDIRS = {
 }
 
 # RAG: Retrieve & Re-rank 配置（默认针对 8GB 显存端侧优化）
-RAG_EMBED_MODEL_NAME = os.environ.get("RAG_EMBED_MODEL_NAME", "BAAI/bge-small-zh-v1.5")
+# 默认使用 BAAI/bge-m3:多语言(支持 zh+en 100+ 语言)、8192 长上下文、
+# 中英跨语言检索原生支持。项目知识库混有中文笔记和 WHO/USDA 英文语料,
+# bge-m3 是能同时兼顾两者的最佳选择。需要在 zh-only、极低显存场景下换回
+# bge-small-zh-v1.5 可通过环境变量覆盖。
+RAG_EMBED_MODEL_NAME = os.environ.get("RAG_EMBED_MODEL_NAME", "BAAI/bge-m3")
 RAG_RERANK_MODEL_NAME = os.environ.get("RAG_RERANK_MODEL_NAME", "BAAI/bge-reranker-base")
 RAG_DEVICE = os.environ.get("RAG_DEVICE", "auto")
 
