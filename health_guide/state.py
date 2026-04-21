@@ -1,15 +1,19 @@
-from typing import TypedDict, Annotated, List
+from typing import TypedDict, Annotated, List, Dict
 import operator
 from langchain_core.messages import AnyMessage
 
+
+def _merge_expert_responses(a: Dict[str, str], b: Dict[str, str]) -> Dict[str, str]:
+    return {**a, **b}
+
+
 class AgentState(TypedDict):
-    # messages 存储短期记忆，使用 operator.add 进行追加 
     messages: Annotated[List[AnyMessage], operator.add]
-    # next 用于 Supervisor 决定下一个执行者是谁
-    next: str
-    # 当前对话对应的用户 ID（用于个性化画像加载）
+    # 本轮路由的专家列表（支持多专家并行）
+    next: List[str]
     profile_user_id: str
-    # 最近一次专家节点调用过的工具名
-    last_tools: List[str]
-    # 最近一次是否命中 RAG
-    retrieval_hits: int
+    # 并行执行时各专家写入，用 operator.add 合并
+    last_tools: Annotated[List[str], operator.add]
+    retrieval_hits: Annotated[int, operator.add]
+    # 各专家本轮回答，key=专家名，value=回答文本
+    expert_responses: Annotated[Dict[str, str], _merge_expert_responses]

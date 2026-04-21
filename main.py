@@ -36,13 +36,11 @@ def main():
 
         turn_index += 1
         start_ts = time.perf_counter()
-        route = "Unknown"
+        routes = []
         tools_used = []
         final_answer = ""
         retrieval_hits = 0
 
-        # 使用 stream 模式运行
-        # LangGraph 会自动将新消息追加到历史记录中 (因为 state 中配置了 operator.add)
         for event in graph.stream(
             {
                 "messages": [HumanMessage(content=user_input)],
@@ -52,13 +50,16 @@ def main():
         ):
             for key, value in event.items():
                 print(f"\n[当前节点]: {key}")
-                
+
                 if "messages" in value:
-                    # 打印最新生成的消息
                     last_msg = value["messages"][-1]
                     print(f"[回复内容]: {last_msg.content}")
                     final_answer = str(last_msg.content)
-                    
+
+                if "expert_responses" in value and value["expert_responses"]:
+                    for expert, resp in value["expert_responses"].items():
+                        print(f"[{expert} 回答]: {resp[:120]}{'...' if len(resp) > 120 else ''}")
+
                 if "last_tools" in value and value["last_tools"]:
                     tools_used.extend(value["last_tools"])
                     for tool_name in value["last_tools"]:
@@ -66,10 +67,17 @@ def main():
 
                 if "retrieval_hits" in value:
                     retrieval_hits += int(value.get("retrieval_hits", 0))
-                
+
                 if "next" in value:
-                    route = value["next"]
-                    print(f"[路由决策]: -> {value['next']}")
+                    next_val = value["next"]
+                    if isinstance(next_val, list):
+                        routes = next_val
+                        print(f"[路由决策]: -> {', '.join(next_val)}")
+                    else:
+                        routes = [str(next_val)]
+                        print(f"[路由决策]: -> {next_val}")
+
+        route = ",".join(r for r in routes if r != "FINISH") or "FINISH"
 
         rag_tools = sorted({t for t in tools_used if "retrieve" in t and "knowledge" in t})
         if rag_tools:

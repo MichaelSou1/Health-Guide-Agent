@@ -32,7 +32,7 @@ def nutritionist_node(state):
 
     retrieval_hits = sum(1 for t in used_tools if "retrieve" in t and "knowledge" in t)
     return {
-        "messages": [result["messages"][-1]],
+        "expert_responses": {"Nutritionist": result["messages"][-1].content},
         "last_tools": used_tools,
         "retrieval_hits": retrieval_hits,
     }
