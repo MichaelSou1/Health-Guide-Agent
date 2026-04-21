@@ -28,6 +28,10 @@ from .config import (
 SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf", ".docx"}
 PAGE_SEPARATOR = "\f"
 
+# 句末边界正则：中文句末标点，或英文句末标点后接空白/行尾。
+# 用于切分时的"软边界对齐"，避免在句子中间硬切。
+_SENT_END_RE = re.compile(r'[。！？]|[.!?](?=[ \t\n]|$)')
+
 
 @dataclass
 class Chunk:
@@ -44,14 +48,18 @@ class LocalKnowledgeBase:
         self,
         kb_dir: str = KNOWLEDGE_BASE_DIR,
         chunk_size: int = 420,
-        overlap: int = 80,
+        overlap: int = 100,
         recursive: bool = True,
+        boundary_look_back: int = 120,
+        min_chunk_chars: int = 30,
     ):
         self.kb_dir = Path(kb_dir)
         self.cache_dir = self.kb_dir / ".index_cache"
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.recursive = recursive
+        self.boundary_look_back = boundary_look_back
+        self.min_chunk_chars = min_chunk_chars
         self.chunks: List[Chunk] = []
 
         # 运行时对象（延迟加载，减少冷启动）
@@ -185,6 +193,8 @@ class LocalKnowledgeBase:
             "docs": docs,
             "chunk_size": self.chunk_size,
             "overlap": self.overlap,
+            "boundary_look_back": self.boundary_look_back,
+            "min_chunk_chars": self.min_chunk_chars,
             "embed_model": RAG_EMBED_MODEL_NAME,
         }
         s = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -285,9 +295,19 @@ class LocalKnowledgeBase:
     def _split_text(self, text: str):
         """切分文本为 chunks。返回 [(piece, page_range_or_None), ...]。
 
-        如果 text 中包含 PAGE_SEPARATOR(来自 PDF 提取),会建立「char offset → 页码」映射,
-        然后在切分后反推每个 chunk 所跨的页码区间,用于 citation。
-        普通 md/txt 文件则始终返回 page_range=None。
+        切分策略（优先级从高到低）：
+        1. Markdown 标题行（^#{1,6} ）作为 section 硬边界，chunk 不跨 section，
+           避免将不同主题段落混入同一个 chunk。
+        2. 在 section 内做滑动窗口；窗口末尾向前查找最近断句点，
+           查找范围为 boundary_look_back（默认 120 字符）：
+             - 优先级 1：段落分隔符 \\n\\n
+             - 优先级 2：中英文句末标点（。！？ / . ! ? + 空白）
+             - 优先级 3：单个换行 \\n
+           找不到断点则退回字符硬切（与原策略相同）。
+        3. 长度 < min_chunk_chars 的碎片直接丢弃，避免噪声 chunk 污染索引。
+
+        PDF 文件因含有 PAGE_SEPARATOR，会先建立「字符偏移 → 页码」映射，
+        chunk 产生后反推页码区间用于 citation，与原有行为完全兼容。
         """
         has_pages = PAGE_SEPARATOR in text
         page_numbers: Optional[List[int]] = None
@@ -309,29 +329,65 @@ class LocalKnowledgeBase:
         if not cleaned.strip():
             return []
 
+        # 按 Markdown 标题行划出 section 边界（非 Markdown 文件只有一个 section）
+        heading_positions = [0]
+        for m in re.finditer(r'^#{1,6}\s', cleaned, re.MULTILINE):
+            if m.start() > 0:
+                heading_positions.append(m.start())
+        heading_positions.append(len(cleaned))
+
+        look_back = self.boundary_look_back
         results: List = []
-        start = 0
-        n = len(cleaned)
-        while start < n:
-            end = min(start + self.chunk_size, n)
-            piece = cleaned[start:end].strip()
 
-            if piece:
-                if page_numbers is not None:
-                    start_page = page_numbers[start]
-                    end_page = page_numbers[end - 1]
-                    page_range = (
-                        str(start_page)
-                        if start_page == end_page
-                        else f"{start_page}-{end_page}"
-                    )
-                else:
-                    page_range = None
-                results.append((piece, page_range))
+        for si in range(len(heading_positions) - 1):
+            sec_start = heading_positions[si]
+            sec_end = heading_positions[si + 1]
+            sec_text = cleaned[sec_start:sec_end]
+            n = len(sec_text)
+            start = 0
 
-            if end == n:
-                break
-            start = max(start + 1, end - self.overlap)
+            while start < n:
+                end = min(start + self.chunk_size, n)
+
+                # 在末尾 look_back 窗口内寻找最佳断句位置（仅在非末尾块时执行）
+                if end < n:
+                    win_start = max(start, end - look_back)
+
+                    # 优先级 1：段落分隔
+                    p = sec_text.rfind('\n\n', win_start, end)
+                    if p > start:
+                        end = p + 2
+                    else:
+                        # 优先级 2：句末标点（中英文）
+                        best = -1
+                        for m in _SENT_END_RE.finditer(sec_text, win_start, end):
+                            if m.end() > start:
+                                best = m.end()  # 取最靠右的命中
+                        if best > start:
+                            end = best
+                        else:
+                            # 优先级 3：单个换行
+                            p = sec_text.rfind('\n', win_start, end)
+                            if p > start:
+                                end = p + 1
+
+                piece = sec_text[start:end].strip()
+                if len(piece) >= self.min_chunk_chars:
+                    global_start = sec_start + start
+                    global_end = sec_start + end - 1
+                    if page_numbers is not None:
+                        last_idx = len(page_numbers) - 1
+                        ps = page_numbers[min(global_start, last_idx)]
+                        pe = page_numbers[min(global_end, last_idx)]
+                        page_range = str(ps) if ps == pe else f"{ps}-{pe}"
+                    else:
+                        page_range = None
+                    results.append((piece, page_range))
+
+                if end >= n:
+                    break
+                start = max(start + 1, end - self.overlap)
+
         return results
 
     def clear_cache(self):
@@ -559,10 +615,19 @@ class LocalKnowledgeBase:
 class LayeredKnowledgeRouter:
     """分层知识路由：共享知识库 + Agent 私有知识库。"""
 
-    def __init__(self, kb_root: str = KNOWLEDGE_BASE_DIR, chunk_size: int = 420, overlap: int = 80):
+    def __init__(
+        self,
+        kb_root: str = KNOWLEDGE_BASE_DIR,
+        chunk_size: int = 420,
+        overlap: int = 100,
+        boundary_look_back: int = 120,
+        min_chunk_chars: int = 30,
+    ):
         self.kb_root = Path(kb_root)
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.boundary_look_back = boundary_look_back
+        self.min_chunk_chars = min_chunk_chars
 
         self._shared_store = self._build_shared_store()
         self._agent_stores = self._build_agent_stores()
@@ -578,6 +643,8 @@ class LayeredKnowledgeRouter:
                 chunk_size=self.chunk_size,
                 overlap=self.overlap,
                 recursive=True,
+                boundary_look_back=self.boundary_look_back,
+                min_chunk_chars=self.min_chunk_chars,
             )
 
         return LocalKnowledgeBase(
@@ -585,6 +652,8 @@ class LayeredKnowledgeRouter:
             chunk_size=self.chunk_size,
             overlap=self.overlap,
             recursive=False,
+            boundary_look_back=self.boundary_look_back,
+            min_chunk_chars=self.min_chunk_chars,
         )
 
     def _build_agent_stores(self) -> Dict[str, LocalKnowledgeBase]:
@@ -596,6 +665,8 @@ class LayeredKnowledgeRouter:
                 chunk_size=self.chunk_size,
                 overlap=self.overlap,
                 recursive=True,
+                boundary_look_back=self.boundary_look_back,
+                min_chunk_chars=self.min_chunk_chars,
             )
         return stores
 
