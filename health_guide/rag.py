@@ -24,7 +24,8 @@ from .config import (
 # - .md / .txt: 直接按 UTF-8 读取
 # - .pdf: 通过 pypdf 按页提取文本,用 \f (form-feed) 作为分页分隔符,
 #         便于后续 chunk 归页
-SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf"}
+# - .docx: 通过 python-docx 提取段落文本
+SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf", ".docx"}
 PAGE_SEPARATOR = "\f"
 
 
@@ -82,6 +83,9 @@ class LocalKnowledgeBase:
             if suffix == ".pdf":
                 content = self._read_pdf(path)
                 file_type = "pdf"
+            elif suffix == ".docx":
+                content = self._read_docx(path)
+                file_type = "text"
             else:
                 try:
                     content = path.read_text(encoding="utf-8")
@@ -135,6 +139,46 @@ class LocalKnowledgeBase:
             pages_text.append(cleaned)
 
         return PAGE_SEPARATOR.join(pages_text)
+
+    @staticmethod
+    def _read_docx(path: Path) -> str:
+        """提取 Word (.docx) 文件的段落文本，段落间以换行分隔。
+
+        设计说明:
+        - 使用 python-docx 进行纯 Python 解析，无需 LibreOffice 等系统依赖。
+        - 仅提取正文段落（Paragraph）；表格单元格内容也一并提取，避免遗漏结构化数据。
+        - 不处理嵌入图片/图表等非文本内容（OCR 不在本项目范围）。
+        """
+        try:
+            docx = importlib.import_module("docx")
+        except ImportError as e:
+            raise ImportError(
+                "解析 Word 文档需要 python-docx，请先执行: pip install python-docx"
+            ) from e
+
+        try:
+            doc = docx.Document(str(path))
+        except Exception as e:
+            print(f"[RAG][warn] 无法解析 Word 文档: {path} ({e.__class__.__name__}: {e})")
+            return ""
+
+        parts: List[str] = []
+
+        # 正文段落
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if text:
+                parts.append(text)
+
+        # 表格单元格
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    text = cell.text.strip()
+                    if text:
+                        parts.append(text)
+
+        return "\n".join(parts)
 
     def _docs_fingerprint(self, docs: List[Dict[str, str]]) -> str:
         payload = {
