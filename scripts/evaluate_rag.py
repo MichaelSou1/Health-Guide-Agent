@@ -439,7 +439,19 @@ def main():
     )
     parser.add_argument("--kb-dir", default=KNOWLEDGE_BASE_DIR, help="Knowledge base directory")
     parser.add_argument("--chunk-size", type=int, default=420, help="Chunk size")
-    parser.add_argument("--overlap", type=int, default=80, help="Chunk overlap")
+    parser.add_argument("--overlap", type=int, default=100, help="Chunk overlap")
+    parser.add_argument(
+        "--boundary-look-back",
+        type=int,
+        default=120,
+        help="Max chars to look back for a sentence boundary when snapping chunk end (default: 120)",
+    )
+    parser.add_argument(
+        "--min-chunk-chars",
+        type=int,
+        default=30,
+        help="Discard chunks shorter than this many characters (default: 30)",
+    )
     parser.add_argument(
         "--stage1-ks",
         default="5,10,20",
@@ -468,7 +480,11 @@ def main():
     dataset = load_dataset(Path(args.dataset))
 
     kb = LayeredKnowledgeRouter(
-        kb_root=args.kb_dir, chunk_size=args.chunk_size, overlap=args.overlap
+        kb_root=args.kb_dir,
+        chunk_size=args.chunk_size,
+        overlap=args.overlap,
+        boundary_look_back=args.boundary_look_back,
+        min_chunk_chars=args.min_chunk_chars,
     )
     kb.build(force_rebuild=False)
 

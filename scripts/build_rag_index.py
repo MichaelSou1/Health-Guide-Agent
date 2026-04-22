@@ -15,7 +15,11 @@ def main():
     parser = argparse.ArgumentParser(description="Offline prebuild for local RAG embeddings/index cache.")
     parser.add_argument("--kb-dir", default=KNOWLEDGE_BASE_DIR, help="Knowledge base directory path")
     parser.add_argument("--chunk-size", type=int, default=420, help="Chunk size")
-    parser.add_argument("--overlap", type=int, default=80, help="Chunk overlap")
+    parser.add_argument("--overlap", type=int, default=100, help="Chunk overlap")
+    parser.add_argument("--boundary-look-back", type=int, default=120,
+                        help="Max chars to search back for a sentence boundary (default: 120)")
+    parser.add_argument("--min-chunk-chars", type=int, default=30,
+                        help="Discard chunks shorter than this many characters (default: 30)")
     parser.add_argument(
         "--agent",
         default="",
@@ -29,7 +33,13 @@ def main():
     )
     args = parser.parse_args()
 
-    kb = LayeredKnowledgeRouter(kb_root=args.kb_dir, chunk_size=args.chunk_size, overlap=args.overlap)
+    kb = LayeredKnowledgeRouter(
+        kb_root=args.kb_dir,
+        chunk_size=args.chunk_size,
+        overlap=args.overlap,
+        boundary_look_back=args.boundary_look_back,
+        min_chunk_chars=args.min_chunk_chars,
+    )
     kb.build(force_rebuild=args.rebuild, agent=args.agent or None)
 
     stats = kb.get_index_stats()
@@ -38,6 +48,8 @@ def main():
         "kb_dir": str(Path(args.kb_dir)),
         "chunk_size": args.chunk_size,
         "overlap": args.overlap,
+        "boundary_look_back": args.boundary_look_back,
+        "min_chunk_chars": args.min_chunk_chars,
         "agent": args.agent or "all",
         "force_rebuild": args.rebuild,
     }

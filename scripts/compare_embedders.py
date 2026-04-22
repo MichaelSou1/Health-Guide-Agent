@@ -47,6 +47,8 @@ def _run_single(
     out_dir: Path,
     chunk_size: int,
     overlap: int,
+    boundary_look_back: int,
+    min_chunk_chars: int,
 ) -> Dict:
     report_path = out_dir / f"report_{_safe_name(model)}.json"
     env = os.environ.copy()
@@ -61,6 +63,8 @@ def _run_single(
         "--stage1-pool", str(stage1_pool),
         "--chunk-size", str(chunk_size),
         "--overlap", str(overlap),
+        "--boundary-look-back", str(boundary_look_back),
+        "--min-chunk-chars", str(min_chunk_chars),
         "--out", str(report_path),
     ]
 
@@ -234,7 +238,9 @@ def main():
     parser.add_argument("--stage2-ks", default="1,3,5")
     parser.add_argument("--stage1-pool", type=int, default=20)
     parser.add_argument("--chunk-size", type=int, default=420)
-    parser.add_argument("--overlap", type=int, default=80)
+    parser.add_argument("--overlap", type=int, default=100)
+    parser.add_argument("--boundary-look-back", type=int, default=120)
+    parser.add_argument("--min-chunk-chars", type=int, default=30)
     parser.add_argument(
         "--out-dir",
         default="reports/embedder_compare",
@@ -263,6 +269,8 @@ def main():
             out_dir=out_dir,
             chunk_size=args.chunk_size,
             overlap=args.overlap,
+            boundary_look_back=args.boundary_look_back,
+            min_chunk_chars=args.min_chunk_chars,
         )
 
     summary = _summarize(models, reports, stage1_ks, stage2_ks)
