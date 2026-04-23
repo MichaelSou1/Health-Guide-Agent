@@ -68,12 +68,14 @@
 cp .env.example .env
 ```
 
-然后编辑 `.env` 并填入你的 API Key：
+然后编辑 `.env` 并填入你的 OpenAI 兼容 API 配置：
 
 ```ini
-SILICONFLOW_API_KEY=your_key
-SILICONFLOW_MODEL=Qwen/Qwen2.5-14B-Instruct
-METASO_API_KEY=your_key_or_empty
+LLM_BASE_URL=https://api.siliconflow.cn/v1
+LLM_API_KEY=your_key
+LLM_MODEL=Qwen/Qwen2.5-14B-Instruct
+LLM_API_MODE=responses
+LLM_OUTPUT_VERSION=responses/v1
 # 可选
 PROFILE_STORE_PATH=profile_store.json
 KNOWLEDGE_BASE_DIR=knowledge_base
@@ -87,6 +89,12 @@ RAG_FINAL_TOP_K=4
 RAG_EMBED_BATCH_SIZE=32
 RAG_RERANK_BATCH_SIZE=16
 ```
+
+说明：
+
+- 主对话模型与 `scripts/generate_eval_dataset.py` 会共用同一套 `LLM_*` 配置。
+- 默认按 OpenAI Responses API 方式调用；如果你的服务商只兼容 Chat Completions，可将 `LLM_API_MODE=chat_completions`。
+- 为兼容旧配置，若未填写 `LLM_*`，代码仍会回退读取 `SILICONFLOW_*` 变量。
 
 2. 使用 Conda 创建环境（推荐）
 

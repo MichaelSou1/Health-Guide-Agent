@@ -1,6 +1,6 @@
 from ..tools import get_user_profile, update_user_profile, retrieve_general_knowledge
 from ..utils import create_agent
-from ..llm import llm
+from ..llm import extract_text_content, llm
 from ..profile_store import get_user_profile as get_profile_from_store, profile_to_prompt_text
 
 def _build_general_agent(user_id: str):
@@ -10,8 +10,10 @@ def _build_general_agent(user_id: str):
         f"当前用户画像：{profile_text}。"
         "负责寒暄、通用问题与多轮澄清。"
         "若用户询问健康常识并需要给出建议，先调用一次 retrieve_general_knowledge 再回答。"
-        "若 retrieve_general_knowledge 返回了知识片段（结果包含"命中以下知识片段"），"
+        "若 retrieve_general_knowledge 返回了知识片段（结果包含'命中以下知识片段'），"
         "必须直接基于这些片段作答，不得仅凭模型内部知识回答。"
+        "若 retrieve_general_knowledge 明确返回'未命中本地知识库'，"
+        "可以直接基于你的通用健康常识给出简洁、保守的兜底回答。"
         "若用户提供新的个人偏好、作息、目标变化，请调用 update_user_profile 进行记录。"
         "回答保持自然、简洁。"
         "优先短回复，不主动给健康方案；只有用户明确询问时再进入健康建议。"
@@ -30,7 +32,7 @@ def general_node(state):
 
     retrieval_hits = sum(1 for t in used_tools if "retrieve" in t and "knowledge" in t)
     return {
-        "expert_responses": {"General": result["messages"][-1].content},
+        "expert_responses": {"General": extract_text_content(result["messages"][-1])},
         "last_tools": used_tools,
         "retrieval_hits": retrieval_hits,
     }

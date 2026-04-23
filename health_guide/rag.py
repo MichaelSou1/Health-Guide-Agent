@@ -1,4 +1,5 @@
 import re
+import os
 import json
 import hashlib
 import importlib
@@ -12,7 +13,10 @@ from .config import (
     KNOWLEDGE_BASE_AGENT_SUBDIRS,
     RAG_EMBED_BATCH_SIZE,
     RAG_EMBED_MODEL_NAME,
+    RAG_FALLBACK_EMBED_MODEL_NAME,
     RAG_FINAL_TOP_K,
+    RAG_HF_HOME,
+    RAG_HF_HUB_CACHE,
     RAG_RERANK_BATCH_SIZE,
     RAG_RERANK_MODEL_NAME,
     RAG_RETRIEVE_TOP_K,
@@ -41,6 +45,12 @@ class Chunk:
     page_range: Optional[str] = None  # 仅 PDF 有值, 例如 "3" 或 "3-4"
 
 
+# Module-level caches so all LocalKnowledgeBase instances share one copy of each model.
+_EMBED_MODEL_CACHE: Dict[str, object] = {}
+_RERANK_MODEL_CACHE: Dict[str, object] = {}
+_RERANK_DISABLED: Dict[str, str] = {}  # model_name -> reason string when load failed
+
+
 class LocalKnowledgeBase:
     """本地 RAG：两阶段检索（Dense Retrieve + Cross-Encoder Re-rank）。"""
 
@@ -65,8 +75,10 @@ class LocalKnowledgeBase:
         # 运行时对象（延迟加载，减少冷启动）
         self._np = None
         self._embed_model = None
+        self._embed_model_name = ""  # actual model name used (may be fallback)
         self._rerank_model = None
         self._device = None
+        self._rerank_disabled_reason = ""
 
         # 索引缓存
         self._chunk_embeddings = None
@@ -188,14 +200,16 @@ class LocalKnowledgeBase:
 
         return "\n".join(parts)
 
-    def _docs_fingerprint(self, docs: List[Dict[str, str]]) -> str:
+    def _docs_fingerprint(self, docs: List[Dict[str, str]], effective_embed_model: str = "") -> str:
         payload = {
             "docs": docs,
             "chunk_size": self.chunk_size,
             "overlap": self.overlap,
             "boundary_look_back": self.boundary_look_back,
             "min_chunk_chars": self.min_chunk_chars,
-            "embed_model": RAG_EMBED_MODEL_NAME,
+            # Use the model that was actually loaded, not just the configured name.
+            # This prevents a stale cache hit when the fallback model was used previously.
+            "embed_model": effective_embed_model or RAG_EMBED_MODEL_NAME,
         }
         s = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(s.encode("utf-8")).hexdigest()
@@ -215,32 +229,180 @@ class LocalKnowledgeBase:
             self._np = importlib.import_module("numpy")
         return self._np
 
-    def _lazy_load_models(self):
-        if self._embed_model is not None and self._rerank_model is not None:
+    @staticmethod
+    def _configure_hf_cache_env():
+        Path(RAG_HF_HOME).mkdir(parents=True, exist_ok=True)
+        Path(RAG_HF_HUB_CACHE).mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("HF_HOME", RAG_HF_HOME)
+        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", RAG_HF_HUB_CACHE)
+
+    @staticmethod
+    def _resolve_local_model_path(
+        model_name: str,
+        required_files: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        if not model_name:
+            return None
+
+        direct = Path(model_name)
+        if direct.exists():
+            if required_files and any(not (direct / name).exists() for name in required_files):
+                return None
+            return str(direct)
+
+        if "/" not in model_name:
+            return None
+
+        repo_dir = Path(RAG_HF_HUB_CACHE) / f"models--{model_name.replace('/', '--')}"
+        snapshots_dir = repo_dir / "snapshots"
+        if not snapshots_dir.exists():
+            return None
+
+        ref_main = repo_dir / "refs" / "main"
+        if ref_main.exists():
+            try:
+                revision = ref_main.read_text(encoding="utf-8").strip()
+                resolved = snapshots_dir / revision
+                if resolved.exists():
+                    if required_files and any(not (resolved / name).exists() for name in required_files):
+                        return None
+                    return str(resolved)
+            except Exception as e:
+                print(f"[RAG][warn] Failed to read refs/main for {model_name}: {e}")
+
+        snapshots = sorted(p for p in snapshots_dir.iterdir() if p.is_dir())
+        if snapshots:
+            resolved = snapshots[-1]
+            if required_files and any(not (resolved / name).exists() for name in required_files):
+                return None
+            return str(resolved)
+        return None
+
+    @staticmethod
+    def _model_label(requested_name: str, resolved_path: Optional[str]) -> str:
+        return resolved_path or requested_name
+
+    def _load_embed_model(self, sentence_transformers):
+        if self._embed_model is not None:
             return
 
+        # Use module-level cache: all KB instances share one SentenceTransformer
+        cache_key = f"{RAG_EMBED_MODEL_NAME}|{RAG_FALLBACK_EMBED_MODEL_NAME}"
+        if cache_key in _EMBED_MODEL_CACHE:
+            self._embed_model, self._embed_model_name = _EMBED_MODEL_CACHE[cache_key]
+            return
+
+        embed_required_files = ["modules.json", "config.json"]
+        primary_path = self._resolve_local_model_path(
+            RAG_EMBED_MODEL_NAME,
+            required_files=embed_required_files,
+        )
+        fallback_path = self._resolve_local_model_path(
+            RAG_FALLBACK_EMBED_MODEL_NAME,
+            required_files=embed_required_files,
+        )
+
+        candidates = []
+        if primary_path:
+            candidates.append((RAG_EMBED_MODEL_NAME, primary_path))
+        elif not fallback_path:
+            candidates.append((RAG_EMBED_MODEL_NAME, None))
+
+        if (
+            RAG_FALLBACK_EMBED_MODEL_NAME != RAG_EMBED_MODEL_NAME
+            and fallback_path
+        ):
+            candidates.append((RAG_FALLBACK_EMBED_MODEL_NAME, fallback_path))
+
+        last_error = None
+        for requested_name, resolved_path in candidates:
+            try:
+                model_ref = self._model_label(requested_name, resolved_path)
+                model = sentence_transformers.SentenceTransformer(
+                    model_ref,
+                    device=self._device,
+                )
+                if requested_name != RAG_EMBED_MODEL_NAME:
+                    print(
+                        "[RAG][warn] Embedding model "
+                        f"{RAG_EMBED_MODEL_NAME} unavailable locally; "
+                        f"fallback to {requested_name}."
+                    )
+                self._embed_model = model
+                self._embed_model_name = requested_name
+                _EMBED_MODEL_CACHE[cache_key] = (model, requested_name)
+                return
+            except Exception as e:
+                last_error = e
+                print(
+                    "[RAG][warn] Failed to load embedding model "
+                    f"{requested_name}: {e.__class__.__name__}: {e}"
+                )
+
+        raise RuntimeError(
+            "Unable to load any embedding model. "
+            f"Tried primary={RAG_EMBED_MODEL_NAME}, "
+            f"fallback={RAG_FALLBACK_EMBED_MODEL_NAME}."
+        ) from last_error
+
+    def _lazy_load_reranker(self, sentence_transformers):
+        if self._rerank_model is not None or self._rerank_disabled_reason:
+            return
+
+        # Use module-level cache: all KB instances share one CrossEncoder
+        if RAG_RERANK_MODEL_NAME in _RERANK_MODEL_CACHE:
+            self._rerank_model = _RERANK_MODEL_CACHE[RAG_RERANK_MODEL_NAME]
+            return
+        if RAG_RERANK_MODEL_NAME in _RERANK_DISABLED:
+            self._rerank_disabled_reason = _RERANK_DISABLED[RAG_RERANK_MODEL_NAME]
+            return
+
+        rerank_path = self._resolve_local_model_path(
+            RAG_RERANK_MODEL_NAME,
+            required_files=["config.json"],
+        )
+        model_ref = self._model_label(RAG_RERANK_MODEL_NAME, rerank_path)
+        try:
+            model = sentence_transformers.CrossEncoder(
+                model_ref,
+                device=self._device,
+                max_length=512,
+            )
+            self._rerank_model = model
+            _RERANK_MODEL_CACHE[RAG_RERANK_MODEL_NAME] = model
+        except Exception as e:
+            reason = f"{e.__class__.__name__}: {e}"
+            self._rerank_disabled_reason = reason
+            _RERANK_DISABLED[RAG_RERANK_MODEL_NAME] = reason
+            print(
+                "[RAG][warn] Failed to load reranker "
+                f"{RAG_RERANK_MODEL_NAME}; falling back to dense-only retrieval. "
+                f"Reason: {reason}"
+            )
+
+    def _lazy_load_models(self, require_reranker: bool = True):
+        if self._embed_model is not None and (
+            self._rerank_model is not None or not require_reranker or self._rerank_disabled_reason
+        ):
+            return
+
+        self._configure_hf_cache_env()
         sentence_transformers = importlib.import_module("sentence_transformers")
         torch = importlib.import_module("torch")
 
         self._device = self._resolve_device()
         use_fp16 = self._device == "cuda"
 
-        self._embed_model = sentence_transformers.SentenceTransformer(
-            RAG_EMBED_MODEL_NAME,
-            device=self._device,
-        )
-
-        self._rerank_model = sentence_transformers.CrossEncoder(
-            RAG_RERANK_MODEL_NAME,
-            device=self._device,
-            max_length=256,
-        )
+        self._load_embed_model(sentence_transformers)
+        if require_reranker:
+            self._lazy_load_reranker(sentence_transformers)
 
         # 端侧优化：GPU 场景启用半精度，减少显存和延迟
         if use_fp16:
             try:
                 self._embed_model.half()
-                self._rerank_model.model.half()
+                if self._rerank_model is not None and hasattr(self._rerank_model, "model"):
+                    self._rerank_model.model.half()
             except Exception:
                 pass
 
@@ -408,7 +570,13 @@ class LocalKnowledgeBase:
             self.clear_cache()
 
         docs = self._read_documents()
-        self._fingerprint = self._docs_fingerprint(docs)
+
+        # Fingerprint is computed before model load for cache lookup.
+        # We use a provisional fingerprint (primary model name) to check the cache.
+        # If the cache matches, we accept it; if not, we load the model, then
+        # recompute the fingerprint with the effective model name before saving.
+        provisional_fp = self._docs_fingerprint(docs)
+        self._fingerprint = provisional_fp
 
         chunks: List[Chunk] = []
         for d in docs:
@@ -439,7 +607,11 @@ class LocalKnowledgeBase:
             self._ready = True
             return
 
-        self._lazy_load_models()
+        self._lazy_load_models(require_reranker=False)
+
+        # Recompute fingerprint with effective model name in case fallback was used
+        if self._embed_model_name and self._embed_model_name != RAG_EMBED_MODEL_NAME:
+            self._fingerprint = self._docs_fingerprint(docs, self._embed_model_name)
         np = self._lazy_import_numpy()
 
         texts = [c.text for c in self.chunks]
@@ -485,7 +657,7 @@ class LocalKnowledgeBase:
         if not query:
             return empty
 
-        self._lazy_load_models()
+        self._lazy_load_models(require_reranker=False)
         np = self._lazy_import_numpy()
 
         stage1_k = max(1, min(stage1_k, len(self.chunks)))
@@ -519,6 +691,23 @@ class LocalKnowledgeBase:
                 }
             )
 
+        stage2_results: List[Dict[str, object]] = []
+        self._lazy_load_models(require_reranker=True)
+        if self._rerank_model is None:
+            for rank, i in enumerate(candidate_idx[:stage2_k], start=1):
+                c = self.chunks[i]
+                stage2_results.append(
+                    {
+                        "rank": rank,
+                        "chunk_id": c.chunk_id,
+                        "source": c.source,
+                        "page_range": c.page_range,
+                        "dense_score": round(float(sim_scores[i]), 4),
+                        "rerank_score": None,
+                    }
+                )
+            return {"stage1": stage1_results, "stage2": stage2_results}
+
         # Stage-2: Re-rank
         pairs = [[query, self.chunks[i].text] for i in candidate_idx]
         rerank_scores = self._rerank_model.predict(
@@ -532,7 +721,6 @@ class LocalKnowledgeBase:
             combined.append((i, float(sim_scores[i]), float(rr)))
         combined.sort(key=lambda x: x[2], reverse=True)
 
-        stage2_results: List[Dict[str, object]] = []
         for rank, (i, dense, rr) in enumerate(combined[:stage2_k], start=1):
             c = self.chunks[i]
             stage2_results.append(
@@ -559,7 +747,7 @@ class LocalKnowledgeBase:
         if not query:
             return []
 
-        self._lazy_load_models()
+        self._lazy_load_models(require_reranker=False)
         np = self._lazy_import_numpy()
 
         # Stage-1: Dense Retrieve
@@ -576,21 +764,27 @@ class LocalKnowledgeBase:
         candidate_idx = np.argpartition(-sim_scores, retrieve_k - 1)[:retrieve_k]
         candidate_idx = sorted(candidate_idx.tolist(), key=lambda i: float(sim_scores[i]), reverse=True)
 
-        # Stage-2: Re-rank
-        pairs = [[query, self.chunks[i].text] for i in candidate_idx]
-        rerank_scores = self._rerank_model.predict(
-            pairs,
-            batch_size=RAG_RERANK_BATCH_SIZE,
-            show_progress_bar=False,
-        )
-
         combined = []
-        for i, rr in zip(candidate_idx, rerank_scores):
-            dense = float(sim_scores[i])
-            rerank = float(rr)
-            # 组合分数（以重排分为主，保留召回分作微调）
-            final_score = rerank + 0.15 * dense
-            combined.append((i, dense, rerank, final_score))
+        self._lazy_load_models(require_reranker=True)
+        if self._rerank_model is None:
+            for i in candidate_idx:
+                dense = float(sim_scores[i])
+                combined.append((i, dense, None, dense))
+        else:
+            # Stage-2: Re-rank
+            pairs = [[query, self.chunks[i].text] for i in candidate_idx]
+            rerank_scores = self._rerank_model.predict(
+                pairs,
+                batch_size=RAG_RERANK_BATCH_SIZE,
+                show_progress_bar=False,
+            )
+
+            for i, rr in zip(candidate_idx, rerank_scores):
+                dense = float(sim_scores[i])
+                rerank = float(rr)
+                # 组合分数（以重排分为主，保留召回分作微调）
+                final_score = rerank + 0.15 * dense
+                combined.append((i, dense, rerank, final_score))
 
         combined.sort(key=lambda x: x[3], reverse=True)
         final_k = min(max(1, top_k), len(combined))
@@ -606,7 +800,7 @@ class LocalKnowledgeBase:
                     "page_range": c.page_range,
                     "score": round(final_score, 4),
                     "dense_score": round(dense_score, 4),
-                    "rerank_score": round(rerank_score, 4),
+                    "rerank_score": round(rerank_score, 4) if rerank_score is not None else None,
                     "content": c.text,
                 }
             )

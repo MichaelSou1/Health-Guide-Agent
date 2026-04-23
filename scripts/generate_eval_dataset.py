@@ -39,6 +39,7 @@ import argparse
 import json
 import random
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -191,6 +192,7 @@ def _generate_questions_for_chunk(
 ) -> List[str]:
     """调用 LLM 反向生成问题, 失败时重试 `retries` 次, 最终失败就返回空列表。"""
     from langchain_core.messages import HumanMessage, SystemMessage
+    from health_guide.llm import extract_text_content
 
     user_prompt = _build_user_prompt(chunk_text, agent, n_questions)
     last_err: Optional[str] = None
@@ -202,11 +204,11 @@ def _generate_questions_for_chunk(
                     HumanMessage(content=user_prompt),
                 ]
             )
-            content = getattr(response, "content", "") or ""
+            content = extract_text_content(response)
             questions = _parse_questions(content)
             if questions:
                 return questions[:n_questions]
-            last_err = "LLM 返回无法解析为 JSON 数组"
+            last_err = f"LLM 返回无法解析为 JSON 数组, 原始内容: {repr(content[:200])}"
         except Exception as e:  # noqa: BLE001
             last_err = f"{e.__class__.__name__}: {e}"
         time.sleep(0.5 * (attempt + 1))
@@ -313,6 +315,11 @@ def main():
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if out_path.exists():
+        backup = out_path.with_suffix(".jsonl.bak")
+        shutil.copy2(out_path, backup)
+        print(f"[Generate] 已备份旧数据集到: {backup}")
 
     n_success = 0
     n_written = 0

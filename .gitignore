@@ -55,6 +55,14 @@ model_cache/
 models/
 checkpoints/
 
+# RAG index cache (generated from knowledge base, not source)
+.index_cache/
+
+# Eval artifacts
+eval/_debug.jsonl
+eval/*.bak
+eval/rag_eval_dataset_generated.jsonl
+
 # Database files
 *.db
 *.sqlite

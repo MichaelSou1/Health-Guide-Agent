@@ -1,9 +1,38 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 _ = load_dotenv()
 
-# 请确保 .env 文件中有 METASO_API_KEY 和 SILICONFLOW_API_KEY
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# 请确保 .env 文件中有 LLM_API_KEY（或兼容旧版的 SILICONFLOW_API_KEY）
+
+# OpenAI-compatible LLM 配置
+# 优先读取新的通用变量；若未提供，则兼容旧版 SiliconFlow 命名。
+LLM_BASE_URL = (
+    os.environ.get("LLM_BASE_URL")
+    or os.environ.get("OPENAI_COMPAT_BASE_URL")
+    or os.environ.get("OPENAI_BASE_URL")
+    or os.environ.get("SILICONFLOW_BASE_URL")
+    or "https://api.siliconflow.cn/v1"
+)
+LLM_API_KEY = (
+    os.environ.get("LLM_API_KEY")
+    or os.environ.get("OPENAI_COMPAT_API_KEY")
+    or os.environ.get("OPENAI_API_KEY")
+    or os.environ.get("SILICONFLOW_API_KEY")
+)
+LLM_MODEL = (
+    os.environ.get("LLM_MODEL")
+    or os.environ.get("OPENAI_COMPAT_MODEL")
+    or os.environ.get("OPENAI_MODEL")
+    or os.environ.get("SILICONFLOW_MODEL")
+)
+LLM_API_MODE = (
+    os.environ.get("LLM_API_MODE", "responses").strip().lower().replace("-", "_")
+)
+LLM_OUTPUT_VERSION = os.environ.get("LLM_OUTPUT_VERSION", "responses/v1")
 
 # 长期记忆默认模板：用户画像 (User Profile)
 DEFAULT_USER_PROFILE = {
@@ -44,9 +73,25 @@ KNOWLEDGE_BASE_AGENT_SUBDIRS = {
 # 中英跨语言检索原生支持。项目知识库混有中文笔记和 WHO/USDA 英文语料,
 # bge-m3 是能同时兼顾两者的最佳选择。需要在 zh-only、极低显存场景下换回
 # bge-small-zh-v1.5 可通过环境变量覆盖。
+#
+# Reranker 默认使用 BAAI/bge-reranker-v2-m3：基于 bge-m3 架构，与 embedding
+# 模型同源，原生支持中英文跨语言重排，效果远优于 bge-reranker-base。
 RAG_EMBED_MODEL_NAME = os.environ.get("RAG_EMBED_MODEL_NAME", "BAAI/bge-m3")
-RAG_RERANK_MODEL_NAME = os.environ.get("RAG_RERANK_MODEL_NAME", "BAAI/bge-reranker-base")
+RAG_RERANK_MODEL_NAME = os.environ.get("RAG_RERANK_MODEL_NAME", "BAAI/bge-reranker-v2-m3")
 RAG_DEVICE = os.environ.get("RAG_DEVICE", "auto")
+RAG_HF_HOME = (
+    os.environ.get("RAG_HF_HOME")
+    or os.environ.get("HF_HOME")
+    or str(PROJECT_ROOT / "hf_cache")
+)
+RAG_HF_HUB_CACHE = (
+    os.environ.get("RAG_HF_HUB_CACHE")
+    or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    or str(Path(RAG_HF_HOME) / "hub")
+)
+RAG_FALLBACK_EMBED_MODEL_NAME = os.environ.get(
+    "RAG_FALLBACK_EMBED_MODEL_NAME", "BAAI/bge-small-zh-v1.5"
+)
 
 # 第一阶段召回数量（向量检索 Top-K）
 RAG_RETRIEVE_TOP_K = int(os.environ.get("RAG_RETRIEVE_TOP_K", "12"))

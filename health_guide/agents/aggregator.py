@@ -1,5 +1,5 @@
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
-from ..llm import llm
+from ..llm import extract_text_content, llm
 
 _EXPERT_DOMAIN_LABELS = {
     "Trainer":      "训练与运动恢复",
@@ -38,7 +38,7 @@ _SYNTHESIS_TEMPLATE = """\
 def _extract_user_question(state) -> str:
     for msg in reversed(state.get("messages", [])):
         if getattr(msg, "type", None) == "human" or isinstance(msg, HumanMessage):
-            return str(msg.content)
+            return extract_text_content(msg)
     return ""
 
 
@@ -70,4 +70,4 @@ def aggregator_node(state):
         HumanMessage(content=synthesis_prompt),
     ])
 
-    return {"messages": [AIMessage(content=response.content)]}
+    return {"messages": [AIMessage(content=extract_text_content(response))]}

@@ -3,6 +3,7 @@ import os
 import time
 from langchain_core.messages import HumanMessage
 from health_guide.graph import graph
+from health_guide.llm import extract_text_content
 from health_guide.observability import ObservabilityTracker, TurnRecord
 
 def main():
@@ -13,7 +14,7 @@ def main():
     config = {"configurable": {"thread_id": thread_id}}
     tracker = ObservabilityTracker()
 
-    user_id = input("User ID (默认 default_user): ").strip() or "default_user"
+    user_id = input("User ID (默认 default_user): ").strip().lstrip("﻿") or "default_user"
     os.environ["HEALTH_GUIDE_USER_ID"] = user_id
 
     print("=== 开始运行健康管理 Agent 团队 ===")
@@ -53,8 +54,9 @@ def main():
 
                 if "messages" in value:
                     last_msg = value["messages"][-1]
-                    print(f"[回复内容]: {last_msg.content}")
-                    final_answer = str(last_msg.content)
+                    text = extract_text_content(last_msg)
+                    print(f"[回复内容]: {text}")
+                    final_answer = text
 
                 if "expert_responses" in value and value["expert_responses"]:
                     for expert, resp in value["expert_responses"].items():

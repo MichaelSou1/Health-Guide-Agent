@@ -1,6 +1,6 @@
 from typing import List
 from langchain_core.messages import SystemMessage
-from ..llm import llm
+from ..llm import extract_text_content, llm
 
 _VALID_EXPERTS = {"Trainer", "Nutritionist", "Wellness", "General"}
 
@@ -54,7 +54,7 @@ def supervisor_node(state):
         return {"next": forced_routes}
 
     response = llm.invoke([SystemMessage(content=supervisor_system_prompt)] + messages)
-    content = response.content.strip().replace("'", "").replace('"', "")
+    content = extract_text_content(response).strip().replace("'", "").replace('"', "")
 
     if content == "FINISH":
         return {"next": ["FINISH"]}
