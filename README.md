@@ -36,8 +36,11 @@
   - `knowledge_base/general/`
 - 自动读取 `.md / .txt / .pdf` 文档并分块(PDF 通过 `pypdf` 按页提取,支持页级 citation)
 - 使用 **Retrieve & Re-rank** 两阶段检索：
-  - Stage-1 Dense Retrieve: `BAAI/bge-m3`（多语言,支持中英跨语言检索,8192 长上下文）
-  - Stage-2 Cross-Encoder Re-rank: `BAAI/bge-reranker-base`（多语言）
+  - Stage-1 Dense Retrieve: `BAAI/bge-m3`（多语言，支持中英跨语言检索，8192 长上下文）
+  - Stage-2 Cross-Encoder Re-rank: `BAAI/bge-reranker-v2-m3`（基于 bge-m3 架构，原生中英跨语言重排）
+- **506 条评测集实测**（`eval/rag_eval_dataset_v2.jsonl`，LLM 反向生成）：
+  - Embedding Stage：top-10 召回率 **100%**，MRR **0.9445**
+  - Rerank Stage：首位命中率 **94.3%**，MRR **0.9677**
 - 工具：`retrieve_health_knowledge`
 - 返回内容包含 `source/chunk/score`（并保留 dense/rerank 子分数），便于可追溯
 
@@ -45,7 +48,8 @@
 
 - 模型按需懒加载，减少冷启动内存占用
 - GPU 自动启用 FP16 推理（可显著降低显存）
-- 检索索引缓存到 `knowledge_base/.index_cache/`，避免重复编码
+- 检索索引分命名空间缓存到 `knowledge_base/<namespace>/.index_cache/`，避免重复编码
+- 多知识库实例共享同一份模型权重（module-level cache），无重复加载开销
 - 通过环境变量可调 `batch_size / top_k / device`
 
 ### 4) 可观测评估
@@ -82,7 +86,7 @@ KNOWLEDGE_BASE_DIR=knowledge_base
 
 # RAG 可选参数（默认值已针对 8GB 显存 + 中英双语语料调优）
 RAG_EMBED_MODEL_NAME=BAAI/bge-m3
-RAG_RERANK_MODEL_NAME=BAAI/bge-reranker-base
+RAG_RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
 RAG_DEVICE=auto
 RAG_RETRIEVE_TOP_K=12
 RAG_FINAL_TOP_K=4
@@ -212,15 +216,15 @@ python scripts/build_rag_index.py --chunk-size 420 --overlap 80 --stats-out repo
 | 阶段 | 评测对象 | 关注点 | 默认 k |
 | --- | --- | --- | --- |
 | **Embedding Stage**（Stage-1 Dense Retrieve） | `BAAI/bge-m3` 的稠密召回 | 候选池覆盖能力：相关 chunk 有没有被捞进来 | `5,10,20` |
-| **Rerank Stage**（Stage-2 Cross-Encoder Re-rank） | `BAAI/bge-reranker-base` 的头部精排 | 头部精度：最相关的 chunk 是不是被排到了最前面 | `1,3,5` |
+| **Rerank Stage**（Stage-2 Cross-Encoder Re-rank） | `BAAI/bge-reranker-v2-m3` 的头部精排 | 头部精度：最相关的 chunk 是不是被排到了最前面 | `1,3,5` |
 
-评测集默认文件：`eval/rag_eval_dataset.jsonl`
+评测集默认文件：`eval/rag_eval_dataset_v2.jsonl`（506 条，LLM 反向生成，含 chunk 级 ground truth）
 
 一键运行：
 
 ```bash
 python scripts/evaluate_rag.py \
-  --dataset eval/rag_eval_dataset.jsonl \
+  --dataset eval/rag_eval_dataset_v2.jsonl \
   --stage1-ks 5,10,20 \
   --stage2-ks 1,3,5 \
   --stage1-pool 20
@@ -348,8 +352,6 @@ CLI 参数:
 >   测字符串匹配,应该过滤掉。
 > - **答案可定位性验证**:再调一次 LLM 让它"回答自己出的题",只保留能被目标
 >   chunk 正确回答的样本 —— 相当于对评测集自己做一层 end-to-end 过滤。
-
-### A/B 对比多个 embedding 模型
 
 ### A/B 对比多个 embedding 模型
 
