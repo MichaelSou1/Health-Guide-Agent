@@ -515,7 +515,7 @@ PDF 处理细节：
 Health-Guide-Agent/
 ├── main.py                          # 入口：thread_id 恢复/新建 + user_id + 评估指标导出
 ├── session_store.json               # user_id -> 上次 thread_id 映射（自动生成）
-├── checkpoints.db                   # SqliteSaver 持久化的 LangGraph checkpoint
+├── checkpoints.db                   # SqliteSaver 持久化的 LangGraph checkpoint（SQLite WAL 模式，同目录会自动生成 .db-shm / .db-wal）
 ├── requirements.txt
 ├── knowledge_base/                  # 分层 RAG 语料
 ├── reports/                         # 评测 & 会话指标导出

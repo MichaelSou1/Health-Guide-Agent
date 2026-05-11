@@ -105,10 +105,14 @@ def main():
 
                 if "expert_responses" in value and value["expert_responses"]:
                     for expert, resp in value["expert_responses"].items():
+                        if not isinstance(resp, str):
+                            continue
                         print(f"[{expert} 回答]: {resp[:120]}{'...' if len(resp) > 120 else ''}")
 
                 if "agent_notes" in value and value["agent_notes"]:
                     for expert, note in value["agent_notes"].items():
+                        if not isinstance(note, str):
+                            continue
                         print(f"[scratchpad/{expert}]: {note[:100]}{'...' if len(note) > 100 else ''}")
 
                 if "draft_answer" in value and value["draft_answer"]:
@@ -119,12 +123,15 @@ def main():
                     print(f"[Critic 审核]: {value['critic_verdict']}")
 
                 if "last_tools" in value and value["last_tools"]:
-                    tools_used.extend(value["last_tools"])
-                    for tool_name in value["last_tools"]:
+                    real_tools = [t for t in value["last_tools"] if t != "__RESET__"]
+                    tools_used.extend(real_tools)
+                    for tool_name in real_tools:
                         print(f"[调用工具]: {tool_name}")
 
                 if "retrieval_hits" in value:
-                    retrieval_hits += int(value.get("retrieval_hits", 0))
+                    rh = value.get("retrieval_hits", 0)
+                    if isinstance(rh, (int, float, str)):
+                        retrieval_hits += int(rh)
 
                 if "plan" in value and value["plan"] is not None:
                     plan_list = value["plan"]
