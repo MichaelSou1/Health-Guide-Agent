@@ -17,6 +17,11 @@ def _build_nutritionist_agent(user_id: str, peer_notes_text: str):
         "才可不再依赖知识库片段，直接用你的通用营养知识给出保守、清晰的兜底建议。"
         "如果用户补充了口味偏好/禁忌/目标变化，请调用 update_user_profile 更新画像。"
         "输出请给出清晰饮食方案（热量、三大营养素、可替代食材）。"
+        "【个性化要求】回答必须代入画像中的具体数值，给出量化建议而非通用说明。"
+        "例如：不写'建议摄入足够蛋白质'，而写'以你体重 Xkg，建议每天摄入 Y–Z 克蛋白质'。"
+        "若画像中 dietary_context.preferences 有过敏或禁忌食物，任何推荐方案中都不得包含该食物，"
+        "并在回答开头明确注明该禁忌。"
+        "若画像中 dietary_context.goal 为减脂，热量建议不得低于女性 1200 kcal/d、男性 1500 kcal/d。"
     )
     return create_agent(
         llm,
